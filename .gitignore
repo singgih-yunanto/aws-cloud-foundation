@@ -1,0 +1,20 @@
+# Kredensial dan kunci: jangan pernah di-commit
+*.pem
+*.key
+*.ppk
+.env
+.env.*
+credentials
+*.csv
+
+# File sementara
+node_modules/
+~$*
+*.new.pptx
+*.notes.pptx
+*.tmp
+
+# Sistem operasi
+Thumbs.db
+.DS_Store
+desktop.ini
