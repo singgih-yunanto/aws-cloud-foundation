@@ -12,7 +12,7 @@ Internet, ALB (default VPC, dua subnet pada dua AZ), Target Group, dan instance 
 
 ## Prasyarat
 - Default VPC dengan default subnet pada minimal dua AZ (sudah dipakai di Lab 2).
-- IAM role `lab-ec2-app` (instance profile; disiapkan trainer). Role ini memberi izin CloudWatch Agent, X-Ray, dan Secrets Manager yang dipakai pada Lab 5 dan 6.
+- IAM role `lab-ec2-app` (instance profile; disiapkan trainer). Role ini memberi izin CloudWatch Agent (termasuk membaca konfigurasi dari SSM Parameter Store), X-Ray, dan Secrets Manager yang dipakai pada Lab 5 dan 6.
 - Berkas dari trainer: `user-data.lab4.sh` dan `loadgen.sh`. Jalankan `loadgen.sh` dari **AWS CloudShell** (Actions, Upload file), karena CloudShell sudah memiliki bash, curl, dan awk.
 - Service-linked role untuk ELB dan Auto Scaling sudah dibuat trainer.
 
@@ -52,7 +52,7 @@ Pada Lab 4 hanya `/`, `/id`, `/health`, `/slow`, `/degrade`, `/cpu`, `/cpu/stop`
 
 ## Bagian A: Setup ALB
 1. **Security Group** (default VPC). Buat `alb-sg-<nama>` (inbound HTTP 80 dari `0.0.0.0/0`) dan `web-sg-app-<nama>` (inbound HTTP 80 **hanya dari `alb-sg-<nama>`**).
-2. **Launch Template** `lt-app-<nama>`: AMI Amazon Linux 2023, t3.micro, Security Group `web-sg-app-<nama>`, tanpa key pair, IAM instance profile `lab-ec2-app`. Pada *Advanced details*, aktifkan **Detailed CloudWatch monitoring** (metrik per menit, sehingga scaling dan alarm Lab 5 lebih cepat), lalu pada **User data** tempel isi `user-data.lab4.sh` (jangan mengubah bagian KONFIGURASI).
+2. **Launch Template** `lt-app-<nama>`: AMI Amazon Linux 2023, t3.micro, Security Group `web-sg-app-<nama>`, tanpa key pair, IAM instance profile `lab-ec2-app`. Pada *Advanced details*, aktifkan **Detailed CloudWatch monitoring** (metrik per menit, sehingga scaling dan alarm Lab 5 lebih cepat), lalu pada **User data** tempel isi `user-data.lab4.sh` (jangan mengubah bagian KONFIGURASI). User Data ini hanya memasang aplikasi; **CloudWatch Agent tidak dipasang di sini** dan menjadi bagian Lab 5.
 3. **Dua instance manual.** Dari Launch Template, pilih Actions, **Launch instance from template** dua kali, dan pilih subnet pada **dua AZ yang berbeda**. Beri nama `app-manual-1-<nama>` dan `app-manual-2-<nama>`. Instance ini belum dikelola Auto Scaling; dengan begitu peserta melihat dahulu apa yang dikerjakan ALB tanpa ASG.
 4. **Target Group** `tg-app-<nama>`: type Instances, HTTP:80, health check path **`/health`**. Pada *Advanced health check settings* atur interval 10 detik, healthy threshold 2, dan unhealthy threshold 2. Daftarkan (register) kedua instance manual sebagai target.
 5. **ALB** `alb-app-<nama>`: internet-facing, default VPC, **dua subnet pada dua AZ**, `alb-sg-<nama>`, listener HTTP:80 ke Target Group.
@@ -82,6 +82,7 @@ Pada Lab 4 hanya `/`, `/id`, `/health`, `/slow`, `/degrade`, `/cpu`, `/cpu/stop`
    - ASG, tab **Automatic scaling**: harus ada *Target tracking policy* dengan target 50. Bila kosong, tambahkan lewat *Create dynamic scaling policy*.
    - ASG, tab **Details**, bagian *Launch template*: versi yang dipakai adalah versi yang memiliki **Detailed CloudWatch monitoring** aktif. Pada instance ASG, tab **Monitoring** di EC2 menampilkan grafik per 1 menit. Bila Anda mengubah Launch Template setelah instance diluncurkan, instance lama tidak ikut berubah.
    - ASG, tab **Monitoring**, sub-tab *Auto Scaling* dan *EC2*: grafik muncul **2 sampai 10 menit** setelah instance berjalan. *No data* pada beberapa menit pertama itu normal; sub-tab *Auto Scaling* kosong selamanya bila group metrics collection belum diaktifkan.
+   - Metrik **CPU** (dan jaringan serta disk I/O) tersedia tanpa agent, sedangkan **memori dan ruang disk tidak ada** karena CloudWatch Agent belum dipasang. Ini disengaja: Anda memasangnya sendiri pada Lab 5, pada instance tunggal dan pada ASG.
 18. Target Group kini berisi empat target (dua manual, dua dari ASG). Setelah kedua instance ASG berstatus *healthy*, **deregister dan terminate** kedua instance manual. Alasannya: ASG hanya mengelola instance yang diluncurkannya, sehingga instance manual tidak akan diganti bila gagal. Tinggal dua instance yang dikelola ASG.
 
 ### C2. Terminate satu instance dan auto healing
@@ -114,4 +115,4 @@ Dua instance pada dua AZ melayani trafik lewat ALB, perbedaan sebaran antara rou
 | Muncul pesan `Access denied` pada `iam:CreateServiceLinkedRole` | Trainer membuat service-linked role untuk ELB dan Auto Scaling satu kali |
 
 ## Cleanup
-Resource lab ini **tetap dipertahankan** sampai Lab 5 dan Lab 6 selesai (keduanya memakai stack ini). Penghapusan dilakukan pada akhir Hari 2 dengan urutan: 1. ASG (instance ikut terhapus). 2. ALB. 3. Target Group. 4. Launch Template. 5. Security Group. 6. Alarm, dashboard, dan metric filter (Lab 5). Topik SNS dan log group `/lab/lab-app` dipertahankan sampai Lab 10. **Trainer memeriksa EC2 Instances, Load Balancers, Volumes, dan Elastic IP pada Region yang dipakai sebelum peserta pulang.**
+Resource lab ini **tetap dipertahankan** sampai Lab 5 dan Lab 6 selesai (keduanya memakai stack ini). Penghapusan dilakukan pada akhir Hari 2 dengan urutan: 1. ASG (instance ikut terhapus). 2. ALB. 3. Target Group. 4. Launch Template. 5. Security Group. 6. Alarm, dashboard, metric filter, instance `mon-solo-<nama>`, dan parameter SSM `AmazonCloudWatch-lab-app-<nama>` (Lab 5 dan 6). Topik SNS dan log group `/lab/lab-app` dipertahankan sampai Lab 10. **Trainer memeriksa EC2 Instances, Load Balancers, Volumes, dan Elastic IP pada Region yang dipakai sebelum peserta pulang.**
