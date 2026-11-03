@@ -8,11 +8,11 @@ Aplikasi web kecil (Python 3, satu file) yang dipakai pada Lab 4 (ALB dan ASG), 
 | Berkas | Fungsi |
 |---|---|
 | `lab-app.py` | Aplikasi. Hanya library standar untuk fitur inti; `boto3`, `pymongo`, `psycopg2`, dan OpenTelemetry bersifat opsional. |
-| `user-data.template.sh` | Templat User Data (instalasi dan systemd). **Tanpa CloudWatch Agent**: peserta memasangnya pada Lab 5. |
+| `user-data.template.sh` | Templat User Data (instalasi dan systemd). **Tanpa CloudWatch Agent**: peserta memasangnya pada Lab 5 (instance tunggal) dan Lab 6 (ASG). |
 | `cwagent/` | Konfigurasi agent (`agent-config.v1.json`, `agent-config.v2-traces.json`) dan potongan User Data untuk ASG; lihat `cwagent/README.md`. |
 | `build-userdata.py` | Menggabungkan templat dan aplikasi (gzip + base64 karena batas User Data 16 KB). Jalankan `python build-userdata.py` setelah mengubah `lab-app.py`. |
 | `user-data.lab4.sh` | Hasil build untuk **Lab 4** (dan instance tunggal Lab 5): tanpa library tambahan, `TRACING=off`. |
-| `user-data.lab6.sh` | Hasil build untuk **Lab 6 dan 8**: library tambahan, `TRACING=on`, `DB_MODE=docdb`. Pada Lab 6, peserta cukup mengubah tiga nilai KONFIGURASI pada versi Launch Template Lab 5. |
+| `user-data.lab6.sh` | Hasil build untuk **Lab 6 dan 8**: library tambahan, `TRACING=on`, `DB_MODE=docdb`. Pada Lab 6, peserta mengubah tiga nilai KONFIGURASI pada versi Launch Template yang dipakai ASG dan menambahkan dua perintah agent (`cwagent/userdata-agent-snippet.sh`) di akhir User Data. |
 | `loadgen.sh` | Generator beban (bash, curl, xargs). |
 | `seed-orders.py` | Trainer mengisi koleksi `orders` di DocumentDB (tanpa indeks). |
 

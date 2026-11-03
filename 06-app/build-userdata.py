@@ -4,7 +4,7 @@
 Pemakaian:  python build-userdata.py
 Hasil:      user-data.lab4.sh  (library standar saja, TRACING off, tanpa DB)      -> Lab 4 (dan instance tunggal Lab 5)
             user-data.lab6.sh  (extras, TRACING on, DocumentDB)                    -> Lab 6, Lab 8
-Tanpa CloudWatch Agent: dipasang peserta pada Lab 5 (cwagent/).
+Tanpa CloudWatch Agent: dipasang peserta (instance tunggal Lab 5, ASG Lab 6; lihat cwagent/).
 Batas User Data EC2 adalah 16 KB (sebelum base64); skrip memeriksanya.
 """
 import base64, gzip, pathlib

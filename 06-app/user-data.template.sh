@@ -1,7 +1,7 @@
 #!/bin/bash
 # User Data lab-app (Amazon Linux 2023). File ini dibuat oleh build-userdata.py; jangan diedit langsung.
 # Ubah nilai di bagian KONFIGURASI saja, lalu tempel seluruh isinya ke Launch Template > Advanced details > User data.
-# CloudWatch Agent TIDAK dipasang di sini: peserta memasangnya pada Lab 5 (lihat cwagent/). Aplikasi hanya menulis /var/log/lab-app.log.
+# CloudWatch Agent TIDAK dipasang di sini: peserta memasangnya pada Lab 5 dan 6 (lihat cwagent/). Aplikasi hanya menulis /var/log/lab-app.log.
 
 ### KONFIGURASI ###
 TRACING=@@TRACING@@            # on = kirim trace OpenTelemetry ke 127.0.0.1:4318 (Lab 6; perlu CloudWatch Agent dengan penerima OTLP)
