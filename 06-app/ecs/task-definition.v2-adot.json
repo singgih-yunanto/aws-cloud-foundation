@@ -4,8 +4,8 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
   "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/lab-ecs-task-execution",
-  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/lab-ecs-task",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/lab-ecs-task-execution-<nama>",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/lab-ecs-task-<nama>",
   "runtimePlatform": {"cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX"},
   "containerDefinitions": [
     {

@@ -8,7 +8,7 @@
 
 ## Prasyarat
 - Lab 7 dan 8 selesai: service `svc-app-<nama>` berjalan pada revisi `v2` (2 task), ALB `alb-ecs-<nama>` melayani, `ALB=http://<DNS>` terisi di CloudShell.
-- Task role `lab-ecs-task` (disiapkan trainer) memiliki `AWSXRayDaemonWriteAccess`. Trainer sudah mengatur aturan sampling lab agar seluruh request `/checkout` direkam.
+- Task role `lab-ecs-task-<nama>` (Anda buat di Lab 7, Langkah 0b) memiliki `AWSXRayDaemonWriteAccess`. Trainer sudah mengatur aturan sampling lab agar seluruh request `/checkout` direkam.
 - `loadgen.sh` ada di CloudShell (dari Lab 4); bila hilang, ambil dari `06-app/loadgen.sh`.
 
 ## Endpoint `lab-app` yang Dipakai
@@ -25,7 +25,7 @@
  ALB --(X-Amzn-Trace-Id)--> task Fargate (awsvpc, satu jaringan untuk semua container)
                               ├─ container app  --OTLP http 127.0.0.1:4318-->  ┐
                               └─ container adot-collector  <------------------┘  --> AWS X-Ray
-                                   (memakai task role lab-ecs-task)
+                                   (memakai task role lab-ecs-task-<nama>)
 ```
 
 Dalam mode awsvpc seluruh container satu task berbagi `localhost`, sehingga aplikasi cukup mengirim ke `127.0.0.1:4318` (alamat bawaan) dan collector meneruskan ke X-Ray memakai **task role**. Tidak ada perubahan kode aplikasi; yang berubah hanya task definition.
@@ -88,7 +88,7 @@ Setiap task menjalankan dua container, service map menampilkan `lab-app` dan nod
 | Gejala | Penyebab dan solusi |
 |---|---|
 | Task berhenti segera setelah revisi baru | Sidecar `essential` gagal start (cek log `/ecs/adot-<nama>`), memori total container melebihi ukuran task, atau perintah `--config` salah |
-| Log collector berisi `AccessDenied` ke X-Ray | Task role bukan `lab-ecs-task` atau tidak memiliki `AWSXRayDaemonWriteAccess` |
+| Log collector berisi `AccessDenied` ke X-Ray | Task role bukan `lab-ecs-task-<nama>` atau tidak memiliki `AWSXRayDaemonWriteAccess` |
 | Service map kosong | `TRACING` masih `off`, collector tidak berjalan, aplikasi tidak menjangkau `127.0.0.1:4318`, sampling terlalu ketat, atau data belum muncul (tunggu 1 sampai 2 menit) |
 | Hanya sebagian request muncul sebagai trace | Aturan sampling default; trainer mengatur aturan sampling lab |
 | Metrik `CheckoutLatency` kosong | Metric filter dibuat setelah beban, pola salah (`$.path = "/checkout"`), atau nilai bukan `$.ms`; ulangi beban |

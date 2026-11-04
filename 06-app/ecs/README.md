@@ -16,6 +16,6 @@ sed -e "s/<nama>/$NAMA/g" -e "s/<ACCOUNT_ID>/$ACCOUNT/g" task-definition.v1.json
 aws ecs register-task-definition --cli-input-json file://td.json --region ap-southeast-3
 ```
 
-Prasyarat (trainer): role `lab-ecs-task-execution` (kebijakan `AmazonECSTaskExecutionRolePolicy` ditambah izin `logs:CreateLogGroup` agar `awslogs-create-group` bekerja) dan `lab-ecs-task` (`AWSXRayDaemonWriteAccess` untuk Lab 9), serta image di ECR (`../build-and-push.sh`).
+Prasyarat: role `lab-ecs-task-execution-<nama>` (kebijakan `AmazonECSTaskExecutionRolePolicy` ditambah `lab-ecs-create-log-group` agar `awslogs-create-group` bekerja) dan `lab-ecs-task-<nama>` (`AWSXRayDaemonWriteAccess` untuk Lab 9), yang peserta buat sendiri pada Lab 7 Langkah 0; serta image di ECR (`../build-and-push.sh`). Ganti `<nama>` dan `<ACCOUNT_ID>` pada file JSON sebelum `aws ecs register-task-definition`.
 
 Tag image: `v1` (baik), `v2` (baik, label versi baru), `v-bad` (gagal health check sejak start; untuk latihan circuit breaker dan rollback). Regresi yang lolos health check disimulasikan lewat variabel `ERROR_PCT` / `EXTRA_LATENCY_MS` pada revisi task definition, bukan lewat image.

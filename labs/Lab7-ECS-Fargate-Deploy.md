@@ -7,7 +7,7 @@
 **Status:** belum diuji pada akun AWS yang sebenarnya (Fargate dan ECS EC2 di Region Jakarta, wizard console, circuit breaker). Nama menu pada console ECS sering berubah; bila berbeda, ikuti maksud langkahnya dan catat perbedaannya untuk trainer.
 
 ## Prasyarat
-- Trainer sudah membangun image `lab-app` (tag `v1`, `v2`, `v-bad`) di ECR, serta membuat role `lab-ecs-task-execution`, `lab-ecs-task`, dan `lab-ecs-instance` (Bagian B).
+- Trainer sudah membangun image `lab-app` (tag `v1`, `v2`, `v-bad`) di ECR dan menyiapkan kebijakan `lab-ecs-create-log-group`. **Tiga role IAM Anda buat sendiri di Langkah 0.**
 - Anda memakai **default VPC** dengan subnet publik di dua AZ. Subnet dan route table tidak diubah di lab ini (VPC buatan sendiri dibangun pada Lab 10).
 - Di **CloudShell** (Region Jakarta) Anda dapat menjalankan `curl`. Ganti `<nama>` dengan nama Anda (huruf kecil) di semua nama sumber daya.
 
@@ -21,9 +21,31 @@
 | ALB, target group | `alb-ecs-<nama>`, `tg-ecs-<nama>` | Target group bertipe **ip** (task awsvpc memiliki IP sendiri) |
 | Security Group | `alb-sg-<nama>`, `task-sg-<nama>` | `task-sg` hanya menerima port 8080 dari `alb-sg` |
 | Log group | `/ecs/lab-app-<nama>` | Dibuat otomatis oleh task execution role |
+| Role execution | `lab-ecs-task-execution-<nama>` | Dipakai ECS agent: menarik image, menulis log |
+| Role task | `lab-ecs-task-<nama>` | Dipakai kode di dalam container (X-Ray pada Lab 9) |
+| Role instance (Bagian B) | `lab-ecs-instance-<nama>` | Dipakai container instance EC2 untuk mendaftar ke cluster |
 
-## Bagian A: Fargate di belakang ALB (60 menit)
-1. **Lihat image di ECR (5 menit).** ECR, Repositories, `lab-app`.
+## Bagian A: Fargate di belakang ALB (62 menit)
+0. **Buat tiga role IAM (8 menit).** IAM, Roles, **Create role**. Ketiganya berawalan `lab-ecs-` dan berakhiran nama Anda; guardrail akun lab hanya mengizinkan nama itu, dan hanya mengizinkan kebijakan yang tercantum di bawah.
+
+   Peserta yang bekerja di lingkungan vendor biasanya tidak membuat role. Tetapi dengan membuatnya sendiri, Anda tahu persis apa yang dimiliki masing-masing role, sehingga saat membaca task definition vendor Anda dapat bertanya: "role mana yang dipakai, dan izin apa yang ada di dalamnya?"
+
+   - **a.** Role **execution**. *Trusted entity type* **AWS service**; *Use case* **Elastic Container Service**, lalu pilih **Elastic Container Service Task**. **Next**. Pada *Add permissions*, centang dua kebijakan: **`AmazonECSTaskExecutionRolePolicy`** dan **`lab-ecs-create-log-group`** (cari dengan kata kunci `lab-ecs`). *Role name* `lab-ecs-task-execution-<nama>`. **Create role**.
+
+      *Mengapa dua kebijakan:* `AmazonECSTaskExecutionRolePolicy` mengizinkan ECS agent menarik image dari ECR dan menulis log (`logs:CreateLogStream`, `logs:PutLogEvents`), tetapi **tidak** membuat log group. Kebijakan `lab-ecs-create-log-group` menambahkan `logs:CreateLogGroup` agar opsi `awslogs-create-group` pada langkah 4e bekerja. Tanpa itu, task berhenti dengan `ResourceInitializationError`.
+   - **b.** Role **task**. Ulangi dengan *Use case* yang sama (**Elastic Container Service Task**), centang **`AWSXRayDaemonWriteAccess`**, *Role name* `lab-ecs-task-<nama>`. **Create role**.
+
+      *Mengapa X-Ray sekarang:* Lab 7 dan 8 tidak memerlukan izin apa pun dari role ini, tetapi pada Lab 9 sidecar pengirim trace memakainya. Membuatnya sekarang berarti task definition Lab 9 cukup mengganti isi, bukan membuat role baru. Role ini milik **aplikasi**, sedangkan role pada langkah a milik **platform ECS**.
+   - **c.** Role **instance** (dipakai di Bagian B). *Trusted entity type* **AWS service**; *Use case* **EC2**. **Next**. Centang **`AmazonEC2ContainerServiceforEC2Role`**. *Role name* `lab-ecs-instance-<nama>`. **Create role**.
+
+      *Mengapa:* pada launch type EC2, server yang menjalankan container harus mendaftar ke cluster dan menarik image; role ini memberi izin itu. Konsol otomatis membuat *instance profile* dengan nama yang sama, yang nanti dipilih pada Auto Scaling group.
+   - **d.** Buka salah satu role (`lab-ecs-task-execution-<nama>`), tab **Trust relationships**. Temukan `"Service": "ecs-tasks.amazonaws.com"` dan `"Action": "sts:AssumeRole"`. Bandingkan dengan tab **Permissions**.
+
+      *Artinya:* **trust policy** menjawab *siapa boleh memakai role ini* (di sini hanya layanan ECS Tasks), **permissions policy** menjawab *apa yang boleh dilakukan pemakainya*. Dua pertanyaan berbeda yang sering tertukar.
+
+   **Checkpoint:** tiga role ada di daftar Roles (filter `lab-ecs-`); role execution memiliki **2** kebijakan, role task **1**, role instance **1**. Bila muncul `AccessDenied` saat Create role, periksa nama (harus berawalan `lab-ecs-`) dan kebijakan yang dicentang (hanya yang tercantum di atas).
+
+1. **Lihat image di ECR (4 menit).** ECR, Repositories, `lab-app`.
    - **a.** Catat tiga tag: `v1`, `v2`, `v-bad`. Salin **Image URI** tag `v1` (bentuk `<akun>.dkr.ecr.ap-southeast-3.amazonaws.com/lab-app:v1`) ke catatan Anda.
    - **b.** Buka hasil *scan* (tab *Vulnerabilities* pada image). Image ini sengaja memakai base image kecil; temuan tidak perlu diperbaiki, cukup dikenali.
    - **c.** Diskusikan: tag adalah label yang dapat dipindahkan, sedangkan *digest* (`sha256:...`) tidak. Mengapa vendor yang disiplin men-deploy dengan digest atau tag unik per rilis, dan mengapa tag `latest` menyulitkan pelacakan perubahan?
@@ -52,7 +74,7 @@
 
 4. **Task definition `td-app-<nama>`.** ECS, Task definitions, Create new task definition.
    - **a.** *Task definition family* `td-app-<nama>`. *Launch type*: **AWS Fargate**. *OS/Architecture* **Linux/X86_64**. *Task size*: CPU **.25 vCPU**, Memory **.5 GB**.
-   - **b.** *Task role* **`lab-ecs-task`**; *Task execution role* **`lab-ecs-task-execution`** (pilih dari daftar; jangan membuat role baru).
+   - **b.** *Task role* **`lab-ecs-task-<nama>`**; *Task execution role* **`lab-ecs-task-execution-<nama>`** (kedua role buatan Anda di Langkah 0; pilih dari daftar, jangan memilih "Create new role").
 
       *Dua role, dua fungsi:* **execution role** dipakai ECS agent untuk menarik image dari ECR dan menulis log; **task role** dipakai kode aplikasi di dalam container untuk memanggil layanan AWS (misalnya X-Ray pada Lab 9). Salah satu salah pilih adalah penyebab gagal start yang paling umum.
    - **c.** *Container-1*: *Name* `app`, *Image URI* = URI `v1` dari langkah 1, *Essential* **Yes**. *Port mappings*: Container port **8080**, Protocol **TCP**, App protocol **HTTP**.
@@ -105,17 +127,17 @@
 
    **Pelajaran operasi:** kegagalan *saat start* (image, role, kuota, jaringan) dicegat circuit breaker. Kegagalan *setelah* start yang lolos health check (lihat Lab 8) tidak dicegat; hanya pemantauan yang menangkapnya.
 
-## Bagian B: ECS dengan launch type EC2 sebagai pembanding (30 menit)
+## Bagian B: ECS dengan launch type EC2 sebagai pembanding (28 menit)
 Tujuannya bukan membangun produksi, melainkan merasakan perbedaan tanggung jawab dan kegagalan antara Fargate dan EC2.
 
-10. **Tambah kapasitas EC2 ke cluster (8 menit).** Cluster `ecs-<nama>`, tab *Infrastructure*, **Create** pada *Capacity providers* (atau *Add capacity*), pilih **Auto Scaling group** baru.
+10. **Tambah kapasitas EC2 ke cluster (7 menit).** Cluster `ecs-<nama>`, tab *Infrastructure*, **Create** pada *Capacity providers* (atau *Add capacity*), pilih **Auto Scaling group** baru.
     - **a.** *Provisioning model* **On-demand**, *Container instance AMI* **Amazon Linux 2023** (ECS-optimized), *EC2 instance type* **t3.small**, *Desired capacity* **1**, *Maximum* **1**.
-    - **b.** *Container instance IAM role*: **`lab-ecs-instance`**. *Network*: default VPC, **satu subnet publik**. Security Group baru bernama `ecs-ec2-sg-<nama>` tanpa inbound (tidak diperlukan; task memiliki Security Group sendiri).
+    - **b.** *Container instance IAM role*: **`lab-ecs-instance-<nama>`** (buatan Anda di Langkah 0c). *Network*: default VPC, **satu subnet publik**. Security Group baru bernama `ecs-ec2-sg-<nama>` tanpa inbound (tidak diperlukan; task memiliki Security Group sendiri).
     - **c.** Beri nama ASG `asg-ecs-<nama>`. Create.
 
     **Checkpoint (3 sampai 5 menit kemudian):** tab *Infrastructure* menampilkan **1 container instance** *Active* dengan *Registered CPU* 2048 dan *Memory* sekitar 1,9 GB. Buka EC2 console: instance `t3.small` itu benar-benar ada, bisa dilihat, dan membawa biaya per jam sekalipun tidak ada task.
 
-11. **Task definition untuk EC2.** Buat task definition baru `td-app-ec2-<nama>`: *Launch type* **Amazon EC2 instances**, *Network mode* **awsvpc**, *Task size* **.25 vCPU / .5 GB**, role seperti langkah 4 (task role `lab-ecs-task`, execution role `lab-ecs-task-execution`), container `app` image tag **`v2`**, port 8080, env `TRACING=off`, `DB_MODE=mock`, dan awslogs yang sama (`/ecs/lab-app-<nama>`, prefix `app-ec2`).
+11. **Task definition untuk EC2.** Buat task definition baru `td-app-ec2-<nama>`: *Launch type* **Amazon EC2 instances**, *Network mode* **awsvpc**, *Task size* **.25 vCPU / .5 GB**, role seperti langkah 4 (task role `lab-ecs-task-<nama>`, execution role `lab-ecs-task-execution-<nama>`), container `app` image tag **`v2`**, port 8080, env `TRACING=off`, `DB_MODE=mock`, dan awslogs yang sama (`/ecs/lab-app-<nama>`, prefix `app-ec2`).
 
 12. **Target group kedua dan service EC2.**
     - **a.** Buat target group `tg-ecs-ec2-<nama>` (tipe IP, HTTP 8080, health `/health`), seperti langkah 3b. (Satu target group hanya boleh dipakai satu service ECS.)
@@ -132,7 +154,7 @@ Tujuannya bukan membangun produksi, melainkan merasakan perbedaan tanggung jawab
 
     **Checkpoint:** Anda dapat menyebut dua hal: mengapa task EC2 `PENDING` dan siapa yang harus menambah kapasitas (Anda atau vendor, lewat ASG/capacity provider) pada model EC2.
 
-14. **Tabel pembanding (7 menit, dibahas bersama).** Isi sendiri lalu cocokkan dengan kelas:
+14. **Tabel pembanding (6 menit, dibahas bersama).** Isi sendiri lalu cocokkan dengan kelas:
 
     | Aspek | Fargate | ECS launch type EC2 |
     |---|---|---|
@@ -159,13 +181,15 @@ Tujuannya bukan membangun produksi, melainkan merasakan perbedaan tanggung jawab
 |---|---|
 | Task berhenti dengan `CannotPullContainerError` | Tag/URI image salah, execution role tidak boleh menarik dari ECR, atau task tidak punya jalur internet (public IP tidak aktif tanpa NAT/VPC endpoint) |
 | `ResourceInitializationError` atau gagal membuat log group | Execution role tidak punya `logs:CreateLogGroup` (atau `awslogs-create-group` tidak `true`); trainer memperbaiki role atau buat log group manual |
-| `AccessDeniedException` saat memilih role di wizard | Role yang dipilih bukan `lab-ecs-task` / `lab-ecs-task-execution`; guardrail hanya mengizinkan PassRole untuk role itu |
+| `AccessDenied` saat **Create role** (Langkah 0) | Nama tidak berawalan `lab-ecs-`, atau mencentang kebijakan di luar daftar (`AmazonECSTaskExecutionRolePolicy`, `lab-ecs-create-log-group`, `AWSXRayDaemonWriteAccess`, `AmazonEC2ContainerServiceforEC2Role`); guardrail hanya mengizinkan itu |
+| Kebijakan `lab-ecs-create-log-group` tidak ada di daftar | Trainer belum membuatnya; minta trainer |
+| `AccessDeniedException ... iam:PassRole` saat memilih role di wizard | Role yang dipilih bukan buatan Anda (`lab-ecs-task-<nama>` / `lab-ecs-task-execution-<nama>`); guardrail hanya mengizinkan PassRole untuk role berawalan `lab-ecs-` |
 | Target group tetap `unhealthy` | `task-sg` tidak mengizinkan 8080 dari `alb-sg`, health check path bukan `/health`, atau port target group bukan 8080 |
 | `curl $ALB/` menghasilkan 503 setelah service dibuat | Belum ada target *healthy*; tunggu 1 sampai 2 menit atau cek *Events* |
 | Service berulang kali memulai dan menghentikan task | Health check ALB gagal (periksa path/port/SG) atau container keluar; baca *Stopped reason* dan log di `/ecs/lab-app-<nama>` |
-| Tidak ada container instance pada Bagian B | `lab-ecs-instance` salah, instance tidak punya jalur internet ke endpoint ECS, atau AMI bukan ECS-optimized; cek `/var/log/ecs/ecs-agent.log` lewat Instance Connect |
+| Tidak ada container instance pada Bagian B | `lab-ecs-instance-<nama>` salah (atau kebijakan `AmazonEC2ContainerServiceforEC2Role` tidak terpasang), instance tidak punya jalur internet ke endpoint ECS, atau AMI bukan ECS-optimized; cek `/var/log/ecs/ecs-agent.log` lewat Instance Connect |
 | Task EC2 `PENDING` | Kapasitas habis (CPU/memori/ENI); itu perilaku yang diharapkan pada langkah 13 |
 | Circuit breaker tidak membatalkan deployment | Opsi *Rollback on failures* tidak dicentang; periksa pengaturan service |
 
 ## Cleanup
-Pada akhir lab, **hapus Bagian B**: service `svc-app-ec2-<nama>` (desired 0 lalu delete), capacity provider dan ASG `asg-ecs-<nama>` (pastikan instance `t3.small` terminasi), target group `tg-ecs-ec2-<nama>`, dan kembalikan listener ALB ke satu target group `tg-ecs-<nama>` (bobot 100). **Biarkan** cluster, service `svc-app-<nama>`, ALB, dan log group tetap hidup untuk Lab 8 dan 9. Seluruhnya dihapus pada cleanup akhir hari: service (desired 0 lalu delete), cluster, ALB, target group, Security Group `task-sg-<nama>` lalu `alb-sg-<nama>`, task definition (deregister), dan log group.
+Pada akhir lab, **hapus Bagian B**: service `svc-app-ec2-<nama>` (desired 0 lalu delete), capacity provider dan ASG `asg-ecs-<nama>` (pastikan instance `t3.small` terminasi), target group `tg-ecs-ec2-<nama>`, dan kembalikan listener ALB ke satu target group `tg-ecs-<nama>` (bobot 100). **Biarkan** cluster, service `svc-app-<nama>`, ALB, dan log group tetap hidup untuk Lab 8 dan 9. Seluruhnya dihapus pada cleanup akhir hari: service (desired 0 lalu delete), cluster, ALB, target group, Security Group `task-sg-<nama>` lalu `alb-sg-<nama>`, task definition (deregister), log group, dan **tiga role** `lab-ecs-*-<nama>` (IAM, Roles, pilih, **Delete**; role instance terhapus bersama instance profile-nya setelah ASG hilang). **Pertahankan** role task `lab-ecs-task-<nama>` sampai Lab 9 selesai.
