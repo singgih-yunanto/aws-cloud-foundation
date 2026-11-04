@@ -33,6 +33,19 @@
    - **a.** Role **execution**. *Trusted entity type* **AWS service**; *Use case* **Elastic Container Service**, lalu pilih **Elastic Container Service Task**. **Next**. Pada *Add permissions*, centang dua kebijakan: **`AmazonECSTaskExecutionRolePolicy`** dan **`lab-ecs-create-log-group`** (cari dengan kata kunci `lab-ecs`). *Role name* `lab-ecs-task-execution-<nama>`. **Create role**.
 
       *Mengapa dua kebijakan:* `AmazonECSTaskExecutionRolePolicy` mengizinkan ECS agent menarik image dari ECR dan menulis log (`logs:CreateLogStream`, `logs:PutLogEvents`), tetapi **tidak** membuat log group. Kebijakan `lab-ecs-create-log-group` menambahkan `logs:CreateLogGroup` agar opsi `awslogs-create-group` pada langkah 4e bekerja. Tanpa itu, task berhenti dengan `ResourceInitializationError`.
+
+      Isi kebijakan `lab-ecs-create-log-group` (buatan trainer; untuk dibaca, bukan diketik). Klik namanya di daftar kebijakan, tab **JSON**:
+
+      ```json
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": "logs:CreateLogGroup",
+          "Resource": "arn:aws:logs:ap-southeast-3:<akun>:log-group:/ecs/*"
+        }]
+      }
+      ```
    - **b.** Role **task**. Ulangi dengan *Use case* yang sama (**Elastic Container Service Task**), centang **`AWSXRayDaemonWriteAccess`**, *Role name* `lab-ecs-task-<nama>`. **Create role**.
 
       *Mengapa X-Ray sekarang:* Lab 7 dan 8 tidak memerlukan izin apa pun dari role ini, tetapi pada Lab 9 sidecar pengirim trace memakainya. Membuatnya sekarang berarti task definition Lab 9 cukup mengganti isi, bukan membuat role baru. Role ini milik **aplikasi**, sedangkan role pada langkah a milik **platform ECS**.
@@ -40,6 +53,21 @@
 
       *Mengapa:* pada launch type EC2, server yang menjalankan container harus mendaftar ke cluster dan menarik image; role ini memberi izin itu. Konsol otomatis membuat *instance profile* dengan nama yang sama, yang nanti dipilih pada Auto Scaling group.
    - **d.** Buka salah satu role (`lab-ecs-task-execution-<nama>`), tab **Trust relationships**. Temukan `"Service": "ecs-tasks.amazonaws.com"` dan `"Action": "sts:AssumeRole"`. Bandingkan dengan tab **Permissions**.
+
+      Trust policy role **execution** dan **task** (ECS) berbentuk:
+
+      ```json
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+          "Action": "sts:AssumeRole"
+        }]
+      }
+      ```
+
+      Pada role **instance** (EC2), hanya `Principal`-nya yang berbeda: `{"Service": "ec2.amazonaws.com"}`. Wizard console mengisinya otomatis dari *Use case* yang Anda pilih; bila salah pilih, di sinilah kesalahannya terlihat.
 
       *Artinya:* **trust policy** menjawab *siapa boleh memakai role ini* (di sini hanya layanan ECS Tasks), **permissions policy** menjawab *apa yang boleh dilakukan pemakainya*. Dua pertanyaan berbeda yang sering tertukar.
 
