@@ -2,7 +2,7 @@
 #   error storing credentials ... The stub received bad data
 # Penyebab: token login ECR lebih panjang dari batas Windows Credential Manager yang dipakai
 # credential helper Docker Desktop. Solusi: salin konfigurasi Docker Anda ke folder sementara
-# TANPA credsStore/credHelpers, lalu jalankan login, build, dan push dengan DOCKER_CONFIG itu.
+# TANPA credsStore/credHelpers (dan dengan entri "auths" dummy, lihat catatan di bawah), lalu jalankan login, build, dan push dengan DOCKER_CONFIG itu.
 # Konfigurasi asli di %USERPROFILE%\.docker tidak diubah.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File docker-config-nocreds.ps1 <folder-tujuan>
@@ -18,9 +18,18 @@ if (Test-Path $cfg) {
     foreach ($name in 'credsStore', 'credHelpers') {
         if ($o.PSObject.Properties.Name -contains $name) { $o.PSObject.Properties.Remove($name) }
     }
+    # PENTING: bila "auths" kosong dan tidak ada credsStore/credHelpers, Docker memilih credential store
+    # bawaan platform (di Windows: wincred/desktop) -- galat yang sama muncul lagi. Satu entri dummy di
+    # "auths" membuat Docker memakai penyimpanan berkas biasa.
+    if (-not ($o.PSObject.Properties.Name -contains 'auths') -or $null -eq $o.auths) {
+        $o | Add-Member -NotePropertyName 'auths' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (@($o.auths.PSObject.Properties).Count -eq 0) {
+        $o.auths | Add-Member -NotePropertyName 'localhost.invalid' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
     $json = $o | ConvertTo-Json -Depth 20
 } else {
-    $json = '{}'
+    $json = '{"auths":{"localhost.invalid":{}}}'
 }
 [IO.File]::WriteAllText((Join-Path $Dest 'config.json'), $json, (New-Object Text.UTF8Encoding($false)))
 
