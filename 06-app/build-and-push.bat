@@ -80,6 +80,7 @@ echo ^>^> Login ke %REGISTRY%
 rem Token ditulis ke berkas sementara lalu dibaca lewat stdin. Cara ini lebih andal di cmd
 rem daripada pipe (pipe bermasalah bila sisi kanan memakai call), dan berkas dihapus sesudahnya.
 set "TOKEN_FILE=%TEMP%\lab-app-ecr-token.txt"
+set "TEMP_CFG="
 call aws ecr get-login-password --region "%REGION%" >"%TOKEN_FILE%"
 if errorlevel 1 (
   del "%TOKEN_FILE%" >nul 2>&1
@@ -87,28 +88,51 @@ if errorlevel 1 (
   exit /b 1
 )
 call docker login --username AWS --password-stdin "%REGISTRY%" <"%TOKEN_FILE%"
-set "LOGIN_RC=%ERRORLEVEL%"
-del "%TOKEN_FILE%" >nul 2>&1
-if not "%LOGIN_RC%"=="0" (
-  echo [GAGAL] Login Docker ke ECR gagal. Baca pesan Docker tepat di atas baris ini.
-  echo         Bila pesannya error storing credentials atau credential helper:
-  echo           1. Jalankan: docker logout
-  echo           2. Buka %USERPROFILE%\.docker\config.json dan hapus baris "credsStore" ^(atau ganti ke ""^)
-  echo           3. Ulangi skrip ini.
+if not errorlevel 1 goto loggedin
+
+echo.
+echo [INFO] Login gagal. Bila pesan di atas berisi "error storing credentials" atau "The stub received bad data",
+echo        penyebabnya token ECR terlalu panjang untuk Windows Credential Manager ^(credential store Docker Desktop^).
+echo        Mencoba lagi dengan konfigurasi Docker sementara tanpa credential store ^(konfigurasi asli tidak diubah^).
+set "TEMP_CFG=%TEMP%\lab-app-docker-config"
+if exist "%TEMP_CFG%" rmdir /s /q "%TEMP_CFG%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0docker-config-nocreds.ps1" "%TEMP_CFG%"
+if errorlevel 1 (
+  del "%TOKEN_FILE%" >nul 2>&1
+  echo [GAGAL] Tidak dapat membuat konfigurasi Docker sementara.
+  goto fail
+)
+set "DOCKER_CONFIG=%TEMP_CFG%"
+call docker login --username AWS --password-stdin "%REGISTRY%" <"%TOKEN_FILE%"
+if errorlevel 1 (
+  del "%TOKEN_FILE%" >nul 2>&1
+  echo [GAGAL] Login Docker ke ECR tetap gagal. Baca pesan Docker di atas.
   echo         Bila pesannya unauthorized atau no basic auth credentials: pastikan REGION dan ACCOUNT_ID benar.
-  exit /b 1
+  goto fail
 )
 
+:loggedin
+del "%TOKEN_FILE%" >nul 2>&1
+
 call :build v1 v1 no
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto fail
 call :build v2 v2 no
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto fail
 call :build v-bad v-bad yes
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto fail
 
 echo ^>^> Selesai. Daftar tag:
 call aws ecr list-images --repository-name "%REPO%" --region "%REGION%" --query "imageIds[].imageTag" --output text
-exit /b 0
+set "RC=0"
+goto finish
+
+:fail
+set "RC=1"
+
+:finish
+rem Hapus konfigurasi sementara (berisi token login berlaku sekitar 12 jam).
+if defined TEMP_CFG if exist "%TEMP_CFG%" rmdir /s /q "%TEMP_CFG%"
+exit /b %RC%
 
 rem ----------------------------------------------------------------------------
 rem :build TAG APP_VERSION START_UNHEALTHY
