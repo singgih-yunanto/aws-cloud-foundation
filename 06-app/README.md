@@ -16,7 +16,8 @@ Aplikasi web kecil (Python 3, satu file) yang dipakai pada Lab 4 (ALB dan ASG), 
 | `loadgen.sh` | Generator beban (bash, curl, xargs). |
 | `seed-orders.py` | Trainer mengisi koleksi `orders` di DocumentDB (tanpa indeks). |
 | `Dockerfile`, `.dockerignore`, `requirements-otel.txt` | Image container (python:3.12-slim, port 8080, log ke stdout, `DB_MODE=mock`). |
-| `build-and-push.sh` | Trainer membangun dan mengunggah tag `v1`, `v2`, `v-bad` ke ECR. |
+| `build-and-push.sh` | Trainer membangun dan mengunggah tag `v1`, `v2`, `v-bad` ke ECR (Linux/macOS/WSL). |
+| `build-and-push.bat` | Sama, untuk Windows dengan Docker Desktop (Command Prompt atau PowerShell). |
 | `ecs/` | Templat task definition (`v1`: Fargate; `v2-adot`: dengan sidecar ADOT) dan README. |
 
 ## Endpoint
