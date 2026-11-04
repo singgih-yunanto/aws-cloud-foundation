@@ -3,12 +3,20 @@
 
 Satu file, hanya library standar untuk fitur inti. Library opsional:
   boto3, pymongo  -> /notes, /checkout (DocumentDB), diambil lewat Secrets Manager
-  psycopg2        -> /customers (PostgreSQL on-prem lewat VPN, Lab 8)
-  opentelemetry-* -> tracing ke X-Ray lewat CloudWatch Agent (Lab 6 Bagian B)
+  psycopg2        -> /customers (PostgreSQL lewat VPN; opsional, tidak dipakai di kelas)
+  opentelemetry-* -> tracing ke X-Ray (Lab 9: lewat sidecar ADOT di Fargate)
 
-Konfigurasi lewat environment (lihat user-data.sh):
+Konfigurasi lewat environment (EC2: lihat user-data.sh; container: task definition):
   PORT=80  TRACING=on|off  DB_MODE=docdb|mock  DOCDB_SECRET=lab/docdb
   PG_SECRET=lab/onprem-pg  AWS_REGION=ap-southeast-3  LOG_FILE=/var/log/lab-app.log
+Khusus container / operasi ECS (Hari 3):
+  APP_VERSION=v1         label versi; tampil di /, header X-App-Version, dan field "version" pada setiap log
+  START_UNHEALTHY=yes    /health menjawab 503 sejak start (simulasi rilis yang gagal health check)
+  ERROR_PCT=0            persen request biasa yang dijawab 500 (simulasi regresi yang lolos health check)
+  EXTRA_LATENCY_MS=0     tambahan latensi pada setiap request biasa (simulasi regresi kinerja)
+  MOCK_INDEXED=no        pada DB_MODE=mock: yes = query /checkout sudah memakai indeks (cepat)
+  INSTANCE_ID, AZ        mengganti identitas yang biasanya dibaca dari metadata ECS atau EC2
+  LOG_FILE=/dev/stdout   tulis log ke stdout (awslogs menangkapnya)
 """
 import json, os, random, signal, subprocess, sys, threading, time, urllib.request
 from http.cookies import SimpleCookie
@@ -21,29 +29,60 @@ DB_MODE = os.environ.get("DB_MODE", "docdb").lower()
 REGION = os.environ.get("AWS_REGION", "ap-southeast-3")
 LOG_FILE = os.environ.get("LOG_FILE", "/var/log/lab-app.log")
 CA_FILE = os.environ.get("DOCDB_CA", "/opt/lab-app/global-bundle.pem")
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
+START_UNHEALTHY = os.environ.get("START_UNHEALTHY", "no").lower() in ("yes", "on", "true", "1")
+ERROR_PCT = float(os.environ.get("ERROR_PCT", "0") or 0)
+EXTRA_LATENCY_MS = int(os.environ.get("EXTRA_LATENCY_MS", "0") or 0)
+MOCK_INDEXED = os.environ.get("MOCK_INDEXED", "no").lower() in ("yes", "on", "true", "1")
 STARTED = time.time()
+# jalur yang tidak terkena ERROR_PCT / EXTRA_LATENCY_MS (health check dan informasi)
+PLAIN_PATHS = ("/health", "/health/ok", "/health/fail", "/version", "/config", "/oom/free", "/cpu/stop")
 
-# ---------- metadata instance (IMDSv2) ----------
-def imds(path):
+# ---------- identitas: env -> metadata ECS -> metadata EC2 (IMDSv2) ----------
+def http_get(url, headers=None, method="GET", timeout=1):
     try:
-        r = urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT",
-                                   headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
-        tok = urllib.request.urlopen(r, timeout=1).read().decode()
-        r = urllib.request.Request("http://169.254.169.254/latest/meta-data/" + path,
-                                   headers={"X-aws-ec2-metadata-token": tok})
-        return urllib.request.urlopen(r, timeout=1).read().decode()
+        r = urllib.request.Request(url, method=method, headers=headers or {})
+        return urllib.request.urlopen(r, timeout=timeout).read().decode()
     except Exception:
         return None
 
-INSTANCE_ID = imds("instance-id") or "local"
-AZ = imds("placement/availability-zone") or "local"
+def imds(path):
+    tok = http_get("http://169.254.169.254/latest/api/token", {"X-aws-ec2-metadata-token-ttl-seconds": "60"}, "PUT")
+    if not tok:
+        return None
+    return http_get("http://169.254.169.254/latest/meta-data/" + path, {"X-aws-ec2-metadata-token": tok})
+
+def ecs_task_metadata():
+    """Metadata task ECS (Fargate maupun EC2). None bila tidak berjalan di ECS."""
+    base = os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
+    if not base:
+        return None
+    raw = http_get(base.rstrip("/") + "/task", timeout=2)
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
+
+ECS = ecs_task_metadata()
+if ECS:
+    ECS_INFO = {"cluster": (ECS.get("Cluster") or "").split("/")[-1], "family": ECS.get("Family"),
+                "revision": ECS.get("Revision"), "launch_type": ECS.get("LaunchType")}
+    INSTANCE_ID = os.environ.get("INSTANCE_ID") or (ECS.get("TaskARN") or "").split("/")[-1] or "ecs-task"
+    AZ = os.environ.get("AZ") or ECS.get("AvailabilityZone") or "unknown"
+else:
+    ECS_INFO = None
+    INSTANCE_ID = os.environ.get("INSTANCE_ID") or imds("instance-id") or "local"
+    AZ = os.environ.get("AZ") or imds("placement/availability-zone") or "local"
 
 # ---------- log JSON ----------
 _log_lock = threading.Lock()
 def log(level, msg, **kw):
     line = json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "level": level, "instance": INSTANCE_ID,
-                       "msg": msg, **kw}, ensure_ascii=False)
+                       "version": APP_VERSION, "msg": msg, **kw}, ensure_ascii=False)
     with _log_lock:
+        if LOG_FILE in ("-", "/dev/stdout"):
+            print(line, flush=True)
+            return
         try:
             with open(LOG_FILE, "a") as f:
                 f.write(line + "\n")
@@ -51,11 +90,31 @@ def log(level, msg, **kw):
             print(line, flush=True)
 
 # ---------- state ----------
-state = {"requests": 0, "inflight": 0, "healthy": True, "indexed": False, "degrade_ms": 0}
+state = {"requests": 0, "inflight": 0, "healthy": not START_UNHEALTHY, "indexed": MOCK_INDEXED, "degrade_ms": 0}
 state_lock = threading.Lock()
 sessions = {}
 cpu_procs = []      # semua proses pembakar CPU yang masih hidup
 cpu_until = [0.0]   # perkiraan waktu selesai beban CPU terakhir
+mem_hog = []        # blok memori yang sengaja ditahan oleh /oom
+
+def read_first(*paths):
+    for p in paths:
+        try:
+            with open(p) as f:
+                return f.read().strip()
+        except OSError:
+            continue
+    return None
+
+def mem_status():
+    """Pemakaian dan batas memori cgroup (container), dalam MB; n/a bila bukan di cgroup."""
+    cur = read_first("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    lim = read_first("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    if not cur:
+        return "n/a"
+    def mb(v):
+        return "tanpa batas" if not v.isdigit() or int(v) > 1 << 50 else "%d MB" % (int(v) // (1 << 20))
+    return "%s dari %s" % (mb(cur), mb(lim or "max"))
 
 # ---------- tracing (opsional) ----------
 tracer = None
@@ -72,7 +131,8 @@ if TRACING:
             idgen = AwsXRayIdGenerator()
         except ImportError:
             idgen = None
-        res = Resource.create({"service.name": "lab-app", "cloud.provider": "aws", "host.id": INSTANCE_ID})
+        res = Resource.create({"service.name": "lab-app", "service.version": APP_VERSION, "cloud.provider": "aws",
+                               "host.id": INSTANCE_ID})
         prov = TracerProvider(resource=res, **({"id_generator": idgen} if idgen else {}))
         prov.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
             endpoint=os.environ.get("OTLP_ENDPOINT", "http://127.0.0.1:4318/v1/traces"))))
@@ -150,7 +210,11 @@ ENDPOINTS = [
     ("/notes?u=<nama>", "GET menampilkan 20 catatan terbaru; POST menyimpan satu catatan (&text=...) di DocumentDB (Lab 6)", "curl -X POST \"$ALB/notes?u=<nama>&text=halo\""),
     ("/checkout?u=<nama>", "Transaksi bertahap: validate, db.find pada orders, payment.call (~300 ms), render; respons memuat steps_ms (Lab 6)", "bash loadgen.sh checkout $ALB 40 4 <nama>"),
     ("/admin/index?u=<nama>", "Membuat indeks customer_id pada orders (memperbaiki query lambat); /admin/index/drop menghapusnya", "curl \"$ALB/admin/index?u=<nama>\""),
-    ("/customers", "Membaca 10 baris customers_masked dari PostgreSQL on-prem melalui VPN (Lab 8)", "curl http://<ip-publik>/customers"),
+    ("/customers", "Opsional, tidak dipakai di kelas: membaca 10 baris customers_masked dari PostgreSQL melalui VPN", "curl $ALB/customers"),
+    ("/version", "Versi aplikasi dan identitas task/instance (JSON); dipakai untuk memastikan versi yang sedang melayani (Lab 7 dan 8)", "curl $ALB/version"),
+    ("/config", "Konfigurasi aman yang aktif (versi, mode, ERROR_PCT, batas memori); tanpa rahasia", "curl $ALB/config"),
+    ("/crash?code=1", "Mematikan proses container sesaat setelah menjawab (exit code code, bawaan 1); ECS menjalankan task pengganti (Lab 8)", "curl $ALB/crash"),
+    ("/oom?mb=600", "Menahan memori mb MB (bawaan 600, maks 4096) sampai melewati batas container sehingga di-kill (exit 137, OOMKilled); /oom/free melepas (Lab 8)", "curl \"$ALB/oom?mb=600\""),
 ]
 
 def cpu_status():
@@ -182,6 +246,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Instance-Id", INSTANCE_ID)
+        self.send_header("X-App-Version", APP_VERSION)
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -231,6 +296,12 @@ class H(BaseHTTPRequestHandler):
                 log("INFO", "request", method=method, path=path, status=status, ms=int((time.time() - t0) * 1000))
 
     def route(self, method, path, q, raw):
+        if path not in PLAIN_PATHS:
+            if EXTRA_LATENCY_MS:
+                time.sleep(EXTRA_LATENCY_MS / 1000.0)  # simulasi regresi kinerja pada versi ini
+            if ERROR_PCT and random.random() * 100 < ERROR_PCT:
+                log("ERROR", "error acak dari konfigurasi ERROR_PCT", path=path, error_pct=ERROR_PCT)
+                self.send(500, {"error": "simulated regression", "instance": INSTANCE_ID, "version": APP_VERSION}); return 500
         if path == "/health":
             ok = state["healthy"]
             self.send(200 if ok else 503, "ok\n" if ok else "unhealthy\n", "text/plain")
@@ -241,6 +312,27 @@ class H(BaseHTTPRequestHandler):
             state["healthy"] = True; log("INFO", "health dipulihkan"); self.send(200, {"healthy": True}); return 200
         if path == "/id":
             self.send(200, "%s %s\n" % (INSTANCE_ID, AZ), "text/plain"); return 200
+        if path == "/version":
+            self.send(200, {"version": APP_VERSION, "instance": INSTANCE_ID, "az": AZ, "ecs": ECS_INFO}); return 200
+        if path == "/config":
+            self.send(200, {"version": APP_VERSION, "port": PORT, "tracing": bool(tracer), "db_mode": DB_MODE,
+                            "error_pct": ERROR_PCT, "extra_latency_ms": EXTRA_LATENCY_MS, "mock_indexed": state["indexed"],
+                            "healthy": state["healthy"], "log_file": LOG_FILE, "memory": mem_status(), "ecs": ECS_INFO,
+                            "otlp_endpoint": os.environ.get("OTLP_ENDPOINT", "http://127.0.0.1:4318/v1/traces")}); return 200
+        if path == "/crash":
+            code = int(q.get("code", "1"))
+            log("ERROR", "proses dimatikan sengaja lewat /crash", exit_code=code)
+            self.send(200, {"instance": INSTANCE_ID, "exiting_with": code})
+            threading.Timer(0.5, os._exit, args=(code,)).start()
+            return 200
+        if path == "/oom":
+            mb = max(1, min(int(q.get("mb", "600")), 4096))
+            log("WARN", "alokasi memori dimulai lewat /oom", mb=mb)
+            threading.Thread(target=hog_memory, args=(mb,), daemon=True).start()
+            self.send(200, {"instance": INSTANCE_ID, "allocating_mb": mb, "memory_before": mem_status()}); return 200
+        if path == "/oom/free":
+            mem_hog.clear(); log("INFO", "memori yang ditahan dilepas")
+            self.send(200, {"instance": INSTANCE_ID, "memory": mem_status()}); return 200
         if path == "/":
             with state_lock:
                 s = dict(state)
@@ -249,12 +341,15 @@ class H(BaseHTTPRequestHandler):
             html = ("<!doctype html><meta charset=utf-8><title>lab-app</title>"
                     "<style>body{font-family:sans-serif;margin:24px;max-width:1100px}table{border-collapse:collapse}"
                     "td,th{border:1px solid #ccc;padding:6px 10px;vertical-align:top;text-align:left}th{background:#eef}code{font-size:90%%}</style>"
-                    "<h1>lab-app</h1><p>Instance <b>%s</b> di <b>%s</b></p>"
+                    "<h1>lab-app</h1><p>Instance <b>%s</b> di <b>%s</b> &middot; versi <b>%s</b>%s</p>"
                     "<p>Request: %d, in-flight: %d, uptime: %ds, healthy: %s, tracing: %s, degrade: %d ms</p>"
-                    "<p>Beban CPU: %s &middot; load average (1/5/15 menit): %s</p>"
+                    "<p>Beban CPU: %s &middot; load average (1/5/15 menit): %s &middot; memori container: %s</p>"
                     "<h2>Endpoint</h2><table><tr><th>Endpoint</th><th>Fungsi</th><th>Contoh</th></tr>%s</table>") % (
-                INSTANCE_ID, AZ, s["requests"], s["inflight"], time.time() - STARTED, s["healthy"], "on" if tracer else "off",
-                s["degrade_ms"], cpu_status(), load_status(), rows)
+                INSTANCE_ID, AZ, html_esc(APP_VERSION),
+                (" &middot; ECS %s/%s:%s (%s)" % (html_esc(str(ECS_INFO["cluster"])), html_esc(str(ECS_INFO["family"])),
+                                                   ECS_INFO["revision"], html_esc(str(ECS_INFO["launch_type"])))) if ECS_INFO else "",
+                s["requests"], s["inflight"], time.time() - STARTED, s["healthy"], "on" if tracer else "off",
+                s["degrade_ms"], cpu_status(), load_status(), mem_status(), rows)
             self.send(200, html, "text/html"); return 200
         if path == "/slow":
             ms = min(int(q.get("ms", "10000")), 60000)
@@ -357,7 +452,9 @@ class H(BaseHTTPRequestHandler):
             state["indexed"] = True
         log("WARN", "indeks diubah", indexed=state["indexed"])
         self.send(200, {"instance": INSTANCE_ID, "indexed": is_indexed(q.get("u")),
-                        "note": "indeks berlaku di database, jadi semua instance langsung merasakannya"})
+                        "note": ("mode mock: indeks hanya berlaku di instance/task ini; untuk semua task, deploy dengan MOCK_INDEXED=yes"
+                                 if DB_MODE == "mock" else
+                                 "indeks berlaku di database, jadi semua instance langsung merasakannya")})
         return 200
 
     # ----- PostgreSQL on-prem (Lab 8) -----
@@ -385,6 +482,12 @@ def _client_kind():
     from opentelemetry import trace
     return trace.SpanKind.CLIENT
 
+def hog_memory(mb):
+    """Menahan mb MB secara bertahap (16 MB per langkah) agar kenaikan terlihat di grafik memori."""
+    for _ in range(0, mb, 16):
+        mem_hog.append(bytearray(b"\x01") * (16 * 1024 * 1024))  # diisi nilai agar benar-benar terpakai
+        time.sleep(0.05)
+
 def stop_cpu(batch=None):
     """Tanpa argumen: hentikan semua proses beban CPU. Dengan batch: hanya proses milik batch itu."""
     targets = list(cpu_procs) if batch is None else list(batch)
@@ -403,7 +506,8 @@ def main():
         stop_cpu()
         threading.Thread(target=srv.shutdown).start()
     signal.signal(signal.SIGTERM, bye)
-    log("INFO", "lab-app start", port=PORT, tracing=bool(tracer), db_mode=DB_MODE)
+    log("INFO", "lab-app start", port=PORT, tracing=bool(tracer), db_mode=DB_MODE, healthy=state["healthy"],
+        error_pct=ERROR_PCT, extra_latency_ms=EXTRA_LATENCY_MS, ecs=ECS_INFO)
     srv.serve_forever()
 
 if __name__ == "__main__":

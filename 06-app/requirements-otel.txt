@@ -1,0 +1,6 @@
+# Library tracing untuk lab-app (aktif bila TRACING=on). Sama dengan yang dipasang user-data.template.sh.
+# Versi belum dikunci: setelah dry-run berhasil, kunci dengan `pip freeze` agar image v1/v2/v-bad dapat dibangun ulang sama persis.
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk-extension-aws
+opentelemetry-propagator-aws-xray

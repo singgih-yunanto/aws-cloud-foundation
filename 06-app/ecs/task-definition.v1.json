@@ -1,0 +1,32 @@
+{
+  "family": "td-app-<nama>",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/lab-ecs-task-execution",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/lab-ecs-task",
+  "runtimePlatform": {"cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX"},
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "<ACCOUNT_ID>.dkr.ecr.ap-southeast-3.amazonaws.com/lab-app:v1",
+      "essential": true,
+      "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
+      "environment": [
+        {"name": "TRACING", "value": "off"},
+        {"name": "DB_MODE", "value": "mock"},
+        {"name": "LOG_FILE", "value": "/dev/stdout"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/lab-app-<nama>",
+          "awslogs-region": "ap-southeast-3",
+          "awslogs-stream-prefix": "app",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

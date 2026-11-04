@@ -3,7 +3,7 @@
 
 Pemakaian:  python build-userdata.py
 Hasil:      user-data.lab4.sh  (library standar saja, TRACING off, tanpa DB)      -> Lab 4 (dan instance tunggal Lab 5)
-            user-data.lab6.sh  (extras, TRACING on, DocumentDB)                    -> Lab 6, Lab 8
+            user-data.lab6.sh  (extras, TRACING off, DocumentDB)                   -> Lab 6
 Tanpa CloudWatch Agent: dipasang peserta (instance tunggal Lab 5, ASG Lab 6; lihat cwagent/).
 Batas User Data EC2 adalah 16 KB (sebelum base64); skrip memeriksanya.
 """
@@ -16,7 +16,7 @@ tpl = (here / "user-data.template.sh").read_text(encoding="utf-8")
 
 variants = {
     "user-data.lab4.sh": {"TRACING": "off", "EXTRAS": "no", "DB_MODE": "mock"},
-    "user-data.lab6.sh": {"TRACING": "on", "EXTRAS": "yes", "DB_MODE": "docdb"},
+    "user-data.lab6.sh": {"TRACING": "off", "EXTRAS": "yes", "DB_MODE": "docdb"},
 }
 for name, v in variants.items():
     out = tpl.replace("@@APP_B64@@", b64)

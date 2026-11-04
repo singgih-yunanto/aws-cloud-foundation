@@ -4,11 +4,11 @@
 # CloudWatch Agent TIDAK dipasang di sini: peserta memasangnya pada Lab 5 dan 6 (lihat cwagent/). Aplikasi hanya menulis /var/log/lab-app.log.
 
 ### KONFIGURASI ###
-TRACING=@@TRACING@@            # on = kirim trace OpenTelemetry ke 127.0.0.1:4318 (Lab 6; perlu CloudWatch Agent dengan penerima OTLP)
-EXTRAS=@@EXTRAS@@              # yes = pasang boto3/pymongo/psycopg2/OpenTelemetry (Lab 6 dan 8); no = hanya library standar (Lab 4)
+TRACING=@@TRACING@@            # on = kirim trace OpenTelemetry ke 127.0.0.1:4318 (tidak dipakai di EC2 pada kelas; tracing dikerjakan di Fargate, Lab 9)
+EXTRAS=@@EXTRAS@@              # yes = pasang boto3/pymongo/psycopg2/OpenTelemetry (Lab 6); no = hanya library standar (Lab 4)
 DB_MODE=@@DB_MODE@@            # docdb = DocumentDB (Lab 6); mock = tanpa database
 DOCDB_SECRET=lab/docdb         # nama secret di Secrets Manager (Lab 6)
-PG_SECRET=lab/onprem-pg        # nama secret PostgreSQL on-prem (Lab 8)
+PG_SECRET=lab/onprem-pg        # nama secret PostgreSQL (opsional, /customers; tidak dipakai di kelas)
 REGION=ap-southeast-3
 ### AKHIR KONFIGURASI ###
 
