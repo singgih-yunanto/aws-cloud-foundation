@@ -77,9 +77,25 @@ if errorlevel 1 (
 )
 
 echo ^>^> Login ke %REGISTRY%
-call aws ecr get-login-password --region "%REGION%" | call docker login --username AWS --password-stdin "%REGISTRY%"
+rem Token ditulis ke berkas sementara lalu dibaca lewat stdin. Cara ini lebih andal di cmd
+rem daripada pipe (pipe bermasalah bila sisi kanan memakai call), dan berkas dihapus sesudahnya.
+set "TOKEN_FILE=%TEMP%\lab-app-ecr-token.txt"
+call aws ecr get-login-password --region "%REGION%" >"%TOKEN_FILE%"
 if errorlevel 1 (
-  echo [GAGAL] Login Docker ke ECR gagal.
+  del "%TOKEN_FILE%" >nul 2>&1
+  echo [GAGAL] Tidak dapat mengambil token login ECR dari AWS.
+  exit /b 1
+)
+call docker login --username AWS --password-stdin "%REGISTRY%" <"%TOKEN_FILE%"
+set "LOGIN_RC=%ERRORLEVEL%"
+del "%TOKEN_FILE%" >nul 2>&1
+if not "%LOGIN_RC%"=="0" (
+  echo [GAGAL] Login Docker ke ECR gagal. Baca pesan Docker tepat di atas baris ini.
+  echo         Bila pesannya error storing credentials atau credential helper:
+  echo           1. Jalankan: docker logout
+  echo           2. Buka %USERPROFILE%\.docker\config.json dan hapus baris "credsStore" ^(atau ganti ke ""^)
+  echo           3. Ulangi skrip ini.
+  echo         Bila pesannya unauthorized atau no basic auth credentials: pastikan REGION dan ACCOUNT_ID benar.
   exit /b 1
 )
 
